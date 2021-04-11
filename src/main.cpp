@@ -1,9 +1,12 @@
-#include <Arduino.h>
+#include "ikedam_clock.hpp"
+
+
+IkedamClock g_ikedamClock;
 
 void setup() {
-  // put your setup code here, to run once:
+  g_ikedamClock.setup();
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
+  g_ikedamClock.loop();
 }
