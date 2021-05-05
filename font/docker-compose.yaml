@@ -1,0 +1,15 @@
+version: '3'
+services:
+  makesubset:
+    build:
+      context: .
+      args:
+        - http_proxy
+        - https_proxy
+    volumes:
+      - .:/workspace
+    entrypoint:
+      - fontforge
+      - -lang=ff
+      - -script
+      - makesubset.pe

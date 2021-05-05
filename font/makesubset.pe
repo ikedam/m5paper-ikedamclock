@@ -1,0 +1,34 @@
+#! /usr/bin/fontforge
+
+if ($argc < 4)
+  Print("Usage: " + $0 + " FONTFILE LETTERSFILE NEWFONTNAME")
+  Quit(1)
+endif
+
+Open($1)
+if (ToLower($1:e) == "otf")
+  CIDFlatten()
+  Reencode("unicode")
+endif
+
+letters = Ucs4(LoadStringFromFile($2))
+
+i = 0
+while (i < SizeOf(letters))
+  c = letters[i]
+  if (c != 0x0a && c != 0x0d)
+    Print("Added: ", c, "(", Utf8(c), ")")
+    SelectMore(c)
+  endif
+  ++i
+endloop
+
+SelectInvert()
+Clear()
+SetFondName($3)
+SetFontNames(StrJoin(StrSplit($3, " "), ""))
+SetTTFName(0x409,1, $3)
+SetTTFName(0x409,4, $3)
+SetTTFName(0x409,16, $3)
+Generate($3 + ".ttf")
+Quit(0)
