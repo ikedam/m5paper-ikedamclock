@@ -1,8 +1,10 @@
 #include "ikedam_clock.hpp"
+#include "utility/wifi_setting.hpp"
 #include <rom/tjpgd.h>
 #include <M5EPD_Canvas.h>
 #include <M5EPD.h>
-
+#include <WiFi.h>
+#include <hwcrypto/aes.h>
 
 namespace {
     const uint16_t FONTSIZE_SMALL = 40;
@@ -14,6 +16,10 @@ namespace {
 
     const uint8_t WAKEUP_OFFSET_SEC = 10;
     const uint8_t SLEEP_MIN_SEC = 30;
+
+    // docker run --rm python:3-slim python -c 'import os; print(os.urandom(32))'
+    const unsigned char* const ENCRYPT_KEY = reinterpret_cast<const unsigned char*>("\t\xdc" "y\x9a\xc6\x18\xca\x89\xbb\x1e" "V*\xf7\t\xa8\x06\xe1\x1f\rHb\xd7" "j\x84\xbe\xb8\x1e\x03\x89\xb7\xf0" "d");
+
 }
 
 IkedamClock::IkedamClock()
@@ -35,7 +41,27 @@ IkedamClock::IkedamClock()
         FONTSIZE_NORMAL,
         "%"
     )
+    , m_spiffsStatus(SPIFFS_NOT_INITIALIZED)
+    , m_syncTimeTrigger(false)
 {
+}
+
+bool IkedamClock::beginSpiffs() {
+    switch(m_spiffsStatus) {
+    case SPIFFS_INITIALIZED:
+        return true;
+    case SPIFFS_INITIALIZE_FAILED:
+        return false;
+    default:
+        // pass
+        break;
+    }
+    if (!SPIFFS.begin()) {
+        m_spiffsStatus = SPIFFS_INITIALIZE_FAILED;
+        return false;
+    }
+    m_spiffsStatus = SPIFFS_INITIALIZED;
+    return true;
 }
 
 void IkedamClock::setup() {
@@ -60,6 +86,8 @@ void IkedamClock::setup() {
     m_tempratureCanvas.setDriver(&M5.EPD);
     m_humidCanvas.setDriver(&M5.EPD);
 
+    startWifi();
+
     switch(esp_sleep_get_wakeup_cause()) {
         case ESP_SLEEP_WAKEUP_TIMER:
         case ESP_SLEEP_WAKEUP_GPIO:
@@ -75,6 +103,7 @@ void IkedamClock::setupForFirst() {
     M5.EPD.Clear(true);
     loadJpeg();
 }
+
 void IkedamClock::setupForWakeup() {
     rtc_time_t time;
     M5.RTC.getTime(&time);
@@ -96,6 +125,10 @@ namespace {
 */
 
 void IkedamClock::loadJpeg() {
+    if (!beginSpiffs()) {
+        log_e("Failed to initialize SPIFFS");
+        return;
+    }
     /*
     const char* path = "/image.jpg";
     const int16_t width = 405;
@@ -154,7 +187,7 @@ void IkedamClock::loadJpeg() {
 }
 
 bool IkedamClock::setupTrueTypeFont() {
-    if (!SPIFFS.begin(false)) {
+    if (!beginSpiffs()) {
         log_e("Failed to initialize SPIFFS");
         return false;
     }
@@ -169,7 +202,81 @@ bool IkedamClock::setupTrueTypeFont() {
     return true;
 }
 
+namespace {
+    IkedamClock* pThis = NULL;
+    void _onTimeSync(struct timeval *tv) {
+        pThis->onTimeSync(tv);
+    }
+}
+
+void IkedamClock::startWifi() {
+    if (!beginSpiffs()) {
+        log_e("Failed to initialize SPIFFS");
+        return;
+    }
+
+    WifiSetting setting(
+        "/wifi.conf",
+        ENCRYPT_KEY,
+        256
+    );
+    if (!setting.readAndEncrypt()) {
+        log_e("Failed to read Wifi config");
+        return;
+    }
+
+    // Do NOT store configurations to flash!
+    WiFi.persistent(false);
+    WiFi.begin(setting.getEssid(), setting.getPassword());
+    WiFi.onEvent([this](system_event_id_t event, system_event_info_t info) -> void {
+        this->onWiFi(event, info);
+    });
+    pThis = this;
+    sntp_set_time_sync_notification_cb(_onTimeSync);
+}
+
+void IkedamClock::onWiFi(system_event_id_t event, system_event_info_t info) {
+    switch(event) {
+    case SYSTEM_EVENT_STA_CONNECTED:
+        {
+            // actually, JST doesn't make sense in this application...
+            configTzTime("JST", "0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org");
+        }
+        break;
+    case SYSTEM_EVENT_STA_DISCONNECTED:
+        {
+            WiFi.begin();
+        }
+        break;
+    default:
+        log_e("Unexpected wifi event: %d", event);
+        break;
+    }
+}
+
+void IkedamClock::onTimeSync(struct timeval *tv) {
+    // Calling RTC methods here conflicts with loop().
+    m_syncTimeTrigger = true;
+    m_syncTime.tvSec = tv->tv_sec;
+    m_syncTime.tvUsec = tv->tv_usec;
+    m_syncTime.syncMillis = millis();
+}
+
 void IkedamClock::loop() {
+    if (m_syncTimeTrigger) {
+        long millisOffset = static_cast<long>(millis() - m_syncTime.syncMillis);
+        millisOffset += m_syncTime.tvUsec / 1000;
+        time_t now = m_syncTime.tvSec + millisOffset / 1000 + 9 * 60 * 60;  // JST
+        tm t;
+        gmtime_r(&now, &t);
+        rtc_date_t date(t.tm_wday, t.tm_mon + 1, t.tm_mday, t.tm_year + 1900);
+        rtc_time_t time(t.tm_hour, t.tm_min, t.tm_sec);
+        M5.RTC.setTime(&time);
+        M5.RTC.setDate(&date);
+
+        log_e("Sync: %d/%02d/%02d %02d:%02d:%02d", date.year, date.mon, date.day, time.hour, time.min, time.sec);
+        m_syncTimeTrigger = false;
+    }
     rtc_time_t time;
     M5.RTC.getTime(&time);
     M5.BtnP.read();
