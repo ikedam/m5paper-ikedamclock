@@ -5,4 +5,6 @@
 .vscode/ipch
 /font/*.ttf
 /font/*.otf
+/data/image.conf
+/data/image.jpg
 /data/wifi.conf

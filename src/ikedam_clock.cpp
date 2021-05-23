@@ -5,6 +5,7 @@
 #include <M5EPD.h>
 #include <WiFi.h>
 #include <hwcrypto/aes.h>
+#include <HTTPClient.h>
 
 namespace {
     const uint16_t FONTSIZE_SMALL = 40;
@@ -19,6 +20,9 @@ namespace {
 
     // docker run --rm python:3-slim python -c 'import os; print(os.urandom(32))'
     const unsigned char* const ENCRYPT_KEY = reinterpret_cast<const unsigned char*>("\t\xdc" "y\x9a\xc6\x18\xca\x89\xbb\x1e" "V*\xf7\t\xa8\x06\xe1\x1f\rHb\xd7" "j\x84\xbe\xb8\x1e\x03\x89\xb7\xf0" "d");
+
+    const char* HEADERS[] = {"content-type"};
+    size_t HEADERS_NUM = 1;
 
 }
 
@@ -43,7 +47,9 @@ IkedamClock::IkedamClock()
     )
     , m_spiffsStatus(SPIFFS_NOT_INITIALIZED)
     , m_syncTimeTrigger(false)
+    , m_nextImageLoad(false)
 {
+    m_syncTime.syncMillis = 0;
 }
 
 bool IkedamClock::beginSpiffs() {
@@ -101,7 +107,8 @@ void IkedamClock::setup() {
 
 void IkedamClock::setupForFirst() {
     M5.EPD.Clear(true);
-    loadJpeg();
+    loadImageConfig();
+    loadImage();
 }
 
 void IkedamClock::setupForWakeup() {
@@ -124,54 +131,55 @@ namespace {
 }
 */
 
-void IkedamClock::loadJpeg() {
+void IkedamClock::loadImageConfig() {
     if (!beginSpiffs()) {
         log_e("Failed to initialize SPIFFS");
         return;
     }
-    /*
-    const char* path = "/image.jpg";
-    const int16_t width = 405;
-    const int16_t height = 540;
+
+    const char* path = "/image.conf";
+
     if (!SPIFFS.exists(path)) {
-        Serial.printf("Image doesnot exist: %s\n", path);
+        log_e(
+            "No %s is available."
+            " You can write the URL to load images in %s in SPIFFS.",
+            path,
+            path
+        );
         return;
     }
 
-    // load metadata
+    File file = SPIFFS.open(path, "rb");
+    if (file.find('\n')) {
+        file.seek(0);
+        m_imageUrl = file.readStringUntil('\n');
+    } else {
+        file.seek(0);
+        m_imageUrl = file.readString();
+    }
+    file.close();
+}
+
+void IkedamClock::loadImage() {
+    if (!beginSpiffs()) {
+        log_e("Failed to initialize SPIFFS");
+        return;
+    }
+    const char* path = "/image.jpg";
+    if (!SPIFFS.exists(path)) {
+        log_e("Image doesnot exist: %s", path);
+        return;
+    }
+
     File file = SPIFFS.open(path);
     if (!file) {
-        Serial.printf("Failed to open: %s\n", path);
+        log_e("Failed to open: %s", path);
         return;
     }
-
-    JDEC decoder;
-    {
-        uint8_t work[3100];
-        JRESULT jres = jd_prepare(
-            &decoder,
-            jpgReadFile,
-            work,
-            sizeof(work),
-            &file
-        );
-        file.close();
-        if (jres != JDR_OK) {
-            Serial.printf("Failed to read image: %d\n", jres);
-            return;
-        }
-    }
-
-    float xscale = static_cast<float>(width) / decoder.width;
-    float yscale = static_cast<float>(height) / decoder.height;
-    float scale = (xscale < yscale) ? xscale : yscale;
-
-    uint16_t scaledWidth = decoder.width * scale;
-    uint16_t scaledHeight = decoder.height * scale;
-    */
 
     M5EPD_Canvas image(&M5.EPD);
     image.createCanvas(405, 540);
+    /*
     image.drawJpgFile(
         SPIFFS,
         "/image.jpg",
@@ -183,7 +191,85 @@ void IkedamClock::loadJpeg() {
         0,
         JPEG_DIV_4
     );
+    */
+   if (!drawJpeg(&image, &file)) {
+       log_e("Failed to write jpeg");
+       return;
+   }
+   image.pushCanvas(555, 0, UPDATE_MODE_GC16);
+}
+
+bool IkedamClock::loadImageFromUrl() {
+    if (m_imageUrl.length() == 0) {
+        log_e("Image URL is not configured.");
+        return false;
+    }
+    unsigned long start = millis();
+    log_e("Load image from: %s", m_imageUrl.c_str());
+    if (WiFi.status() != WL_CONNECTED) {
+        log_e("WiFi is not connected: %d", WiFi.status());
+        return false;
+    }
+
+    HTTPClient http;
+    if (!http.begin(m_imageUrl)) {
+        log_e("http.begin failed for %s", m_imageUrl.c_str());
+        return false;
+    }
+    http.collectHeaders(HEADERS, HEADERS_NUM);
+
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        log_e("HTTP failed for status=%d", httpCode);
+        http.end();
+        return false;
+    }
+
+    String contentType = http.header("content-type");
+    if (contentType.length() == 0) {
+        log_e("No content-type specified");
+        http.end();
+        return false;
+    }
+    if (http.getSize() <= 0) {
+        log_e("No content-length specified");
+        http.end();
+        return false;
+    }
+    unsigned long now = millis();
+    log_e(
+        "Connected to %s (took %lu secs)",
+        m_imageUrl.c_str(),
+        (now - start) / 1000
+    );
+
+    M5EPD_Canvas image(&M5.EPD);
+    image.createCanvas(405, 540);
+
+    bool result = false;
+    if (contentType.equals("image/png")) {
+        result = drawPng(&image, http.getStreamPtr());
+    } else if (contentType.equals("image/jpeg")) {
+        result = drawJpeg(&image, http.getStreamPtr());
+    } else if (contentType.equals("image/bmp")) {
+        result = drawBmp(&image, http.getStreamPtr());
+    } else {
+        log_e("Unknown content-type: %s", contentType.c_str());
+    }
+    http.end();
+
+    now = millis();
+    log_e(
+        "Completed drawing (took %lu secs for total)",
+        (now - start) / 1000
+    );
+
+    if (!result) {
+        log_e("Error in drwawing image data");
+        return false;
+    }
     image.pushCanvas(555, 0, UPDATE_MODE_GC16);
+    return result;
 }
 
 bool IkedamClock::setupTrueTypeFont() {
@@ -237,7 +323,7 @@ void IkedamClock::startWifi() {
 
 void IkedamClock::onWiFi(system_event_id_t event, system_event_info_t info) {
     switch(event) {
-    case SYSTEM_EVENT_STA_CONNECTED:
+    case SYSTEM_EVENT_STA_GOT_IP:
         {
             // actually, JST doesn't make sense in this application...
             configTzTime("JST", "0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org");
@@ -254,12 +340,13 @@ void IkedamClock::onWiFi(system_event_id_t event, system_event_info_t info) {
     }
 }
 
-void IkedamClock::onTimeSync(struct timeval *tv) {
+void IkedamClock::onTimeSync(struct timeval *pTv) {
     // Calling RTC methods here conflicts with loop().
     m_syncTimeTrigger = true;
-    m_syncTime.tvSec = tv->tv_sec;
-    m_syncTime.tvUsec = tv->tv_usec;
+    m_syncTime.tvSec = pTv->tv_sec;
+    m_syncTime.tvUsec = pTv->tv_usec;
     m_syncTime.syncMillis = millis();
+    // settimeofday(pTv, NULL);
 }
 
 void IkedamClock::loop() {
@@ -277,17 +364,18 @@ void IkedamClock::loop() {
         log_e("Sync: %d/%02d/%02d %02d:%02d:%02d", date.year, date.mon, date.day, time.hour, time.min, time.sec);
         m_syncTimeTrigger = false;
     }
-    rtc_time_t time;
-    M5.RTC.getTime(&time);
+    time_t now;
+    time(&now);
+    now += 9 * 60 * 60; // JST
+    tm t;
+    gmtime_r(&now, &t);
+
     M5.BtnP.read();
 
-    if (!m_timeCanvas.checkUpdated(time.hour, time.min) && M5.BtnP.releasedFor(1000)) {
+    if (!m_timeCanvas.checkUpdated(t.tm_hour, t.tm_min) && M5.BtnP.releasedFor(1000)) {
         delay(1000);
         return;
     }
-
-    rtc_date_t date;
-    M5.RTC.getDate(&date);
 
     uint8_t err = M5.SHT30.UpdateData();
     if (err == I2C_ERROR_OK) {
@@ -295,13 +383,31 @@ void IkedamClock::loop() {
         m_humidCanvas.setMetrics(M5.SHT30.GetRelHumidity());
     }
 
-    m_timeCanvas.setTime(time.hour, time.min);
+    m_timeCanvas.setTime(t.tm_hour, t.tm_min);
 
     bool updated = m_timeCanvas.drawIfUpdated();
     m_tempratureCanvas.drawIfUpdated();
     m_humidCanvas.drawIfUpdated();
     if (updated) {
         // M5.EPD.UpdateFull(UPDATE_MODE_DU);
+    }
+    if (
+        m_syncTime.syncMillis != 0
+        && t.tm_sec < 5
+        && m_nextImageLoad <= now
+    ) {
+        log_e(
+            "%d/%02d/%02d %02d:%02d:%02d",
+            t.tm_year + 1900,
+            t.tm_mon + 1,
+            t.tm_mday,
+            t.tm_hour,
+            t.tm_min,
+            t.tm_sec
+        );
+        loadImageFromUrl();
+        m_nextImageLoad = now + 30 * 60;
+        m_nextImageLoad -= m_nextImageLoad % (30 * 60);
     }
 
     /*

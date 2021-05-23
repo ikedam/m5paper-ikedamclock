@@ -14,7 +14,12 @@ private:
     bool beginSpiffs();
     void setupForFirst();
     void setupForWakeup();
-    void loadJpeg();
+    void loadImageConfig();
+    void loadImage();
+    bool loadImageFromUrl();
+    bool drawPng(M5EPD_Canvas* pImage, Stream* pStream);
+    bool drawJpeg(M5EPD_Canvas* pImage, Stream* pStream);
+    bool drawBmp(M5EPD_Canvas* pImage, Stream* pStream);
     void startWifi();
     void onWiFi(system_event_id_t event, system_event_info_t info);
     bool setupTrueTypeFont();
@@ -40,4 +45,6 @@ private:
 
     bool m_syncTimeTrigger;
     SyncTime m_syncTime;
+    String m_imageUrl;
+    time_t m_nextImageLoad;
 };
