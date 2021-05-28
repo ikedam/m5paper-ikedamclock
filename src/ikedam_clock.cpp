@@ -8,12 +8,15 @@
 #include <HTTPClient.h>
 
 namespace {
+    const uint16_t SCREEN_WIDTH = 960;
+    const uint16_t SCREEN_HEIGHT = 540;
+
     const uint16_t FONTSIZE_SMALL = 40;
     const uint16_t FONTSIZE_NORMAL = 100;
     const uint16_t FONTSIZE_LARGE = 200;
 
-    const uint32_t XOFFSET = 40;
-    const uint32_t YOFFSET = 40;
+    const uint32_t XOFFSET = 30;
+    const uint32_t YOFFSET = 60;
 
     const uint8_t WAKEUP_OFFSET_SEC = 10;
     const uint8_t SLEEP_MIN_SEC = 30;
@@ -23,6 +26,12 @@ namespace {
 
     const char* HEADERS[] = {"content-type"};
     size_t HEADERS_NUM = 1;
+
+    // Somehow all timezone-configuring attempts completely failed...
+    tm* my_localtime_r(time_t now, tm* t) {
+        now += 9 * 60 * 60; // JST
+        return localtime_r(&now, t);
+    }
 
 }
 
@@ -45,9 +54,33 @@ IkedamClock::IkedamClock()
         FONTSIZE_NORMAL,
         "%"
     )
+    , m_batteryCanvas(
+        0,
+        0,
+        FONTSIZE_SMALL
+    )
+    , m_wifiHealthCanvas(
+        XOFFSET,
+        SCREEN_HEIGHT - FONTSIZE_SMALL,
+        FONTSIZE_SMALL,
+        "WiFi"
+    )
+    , m_ntpHealthCanvas(
+        XOFFSET + FONTSIZE_SMALL * 4,
+        SCREEN_HEIGHT - FONTSIZE_SMALL,
+        FONTSIZE_SMALL,
+        "NTP"
+    )
+    , m_sensorHealthCanvas(
+        XOFFSET + FONTSIZE_SMALL * 7.5f,
+        SCREEN_HEIGHT - FONTSIZE_SMALL,
+        FONTSIZE_SMALL,
+        "Sensor"
+    )
     , m_spiffsStatus(SPIFFS_NOT_INITIALIZED)
     , m_syncTimeTrigger(false)
     , m_nextImageLoad(false)
+    , m_shouldUpdate(false)
 {
     m_syncTime.syncMillis = 0;
 }
@@ -91,6 +124,10 @@ void IkedamClock::setup() {
     m_timeCanvas.setDriver(&M5.EPD);
     m_tempratureCanvas.setDriver(&M5.EPD);
     m_humidCanvas.setDriver(&M5.EPD);
+    m_batteryCanvas.setDriver(&M5.EPD);
+    m_wifiHealthCanvas.setDriver(&M5.EPD);
+    m_ntpHealthCanvas.setDriver(&M5.EPD);
+    m_sensorHealthCanvas.setDriver(&M5.EPD);
 
     startWifi();
 
@@ -116,20 +153,6 @@ void IkedamClock::setupForWakeup() {
     M5.RTC.getTime(&time);
     Serial.printf("%02d:%02d:%02d Back from sleep\n", time.hour, time.min, time.sec);
 }
-
-/*
-namespace {
-    uint32_t jpgReadFile(JDEC* decoder, uint8_t* buf, uint32_t len) {
-        File* file = static_cast<File*>(decoder->device);
-        if (buf) {
-            return file->read(buf, len);
-        } else {
-            file->seek(len, SeekCur);
-        }
-        return len;
-    }
-}
-*/
 
 void IkedamClock::loadImageConfig() {
     if (!beginSpiffs()) {
@@ -179,23 +202,10 @@ void IkedamClock::loadImage() {
 
     M5EPD_Canvas image(&M5.EPD);
     image.createCanvas(405, 540);
-    /*
-    image.drawJpgFile(
-        SPIFFS,
-        "/image.jpg",
-        0,
-        0,
-        405,
-        540,
-        0,
-        0,
-        JPEG_DIV_4
-    );
-    */
-   if (!drawJpeg(&image, &file)) {
-       log_e("Failed to write jpeg");
-       return;
-   }
+    if (!drawJpeg(&image, &file)) {
+        log_e("Failed to write jpeg");
+        return;
+    }
    image.pushCanvas(555, 0, UPDATE_MODE_GC16);
 }
 
@@ -353,22 +363,21 @@ void IkedamClock::loop() {
     if (m_syncTimeTrigger) {
         long millisOffset = static_cast<long>(millis() - m_syncTime.syncMillis);
         millisOffset += m_syncTime.tvUsec / 1000;
-        time_t now = m_syncTime.tvSec + millisOffset / 1000 + 9 * 60 * 60;  // JST
+        time_t now = m_syncTime.tvSec + millisOffset / 1000;
         tm t;
-        gmtime_r(&now, &t);
+        my_localtime_r(now, &t);
         rtc_date_t date(t.tm_wday, t.tm_mon + 1, t.tm_mday, t.tm_year + 1900);
         rtc_time_t time(t.tm_hour, t.tm_min, t.tm_sec);
         M5.RTC.setTime(&time);
         M5.RTC.setDate(&date);
 
-        log_e("Sync: %d/%02d/%02d %02d:%02d:%02d", date.year, date.mon, date.day, time.hour, time.min, time.sec);
+        log_e("Sync: %d/%02d/%02d %02d:%02d:%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
         m_syncTimeTrigger = false;
     }
     time_t now;
     time(&now);
-    now += 9 * 60 * 60; // JST
     tm t;
-    gmtime_r(&now, &t);
+    my_localtime_r(now, &t);
 
     M5.BtnP.read();
 
@@ -385,12 +394,21 @@ void IkedamClock::loop() {
 
     m_timeCanvas.setTime(t.tm_hour, t.tm_min);
 
-    bool updated = m_timeCanvas.drawIfUpdated();
+    m_batteryCanvas.setVoltage(M5.getBatteryVoltage());
+    m_wifiHealthCanvas.setStatus(WiFi.status() == WL_CONNECTED);
+    m_ntpHealthCanvas.setStatus(
+        m_syncTime.syncMillis != 0
+        && now - m_syncTime.tvSec < 3600 + 300 // period + buffer
+    );
+    m_sensorHealthCanvas.setStatus(err == I2C_ERROR_OK);
+
+    m_timeCanvas.drawIfUpdated();
     m_tempratureCanvas.drawIfUpdated();
     m_humidCanvas.drawIfUpdated();
-    if (updated) {
-        // M5.EPD.UpdateFull(UPDATE_MODE_DU);
-    }
+    m_batteryCanvas.drawIfUpdated();
+    m_wifiHealthCanvas.drawIfUpdated();
+    m_ntpHealthCanvas.drawIfUpdated();
+    m_sensorHealthCanvas.drawIfUpdated();
     if (
         m_syncTime.syncMillis != 0
         && t.tm_sec < 5
@@ -408,6 +426,17 @@ void IkedamClock::loop() {
         loadImageFromUrl();
         m_nextImageLoad = now + 30 * 60;
         m_nextImageLoad -= m_nextImageLoad % (30 * 60);
+        m_shouldUpdate = true;
+    } else if (
+        t.tm_sec < 5
+        && (
+            m_shouldUpdate
+            || now - m_lastRefresh > 3600
+        )
+    ) {
+        M5.EPD.UpdateFull(UPDATE_MODE_GC16);
+        m_shouldUpdate = false;
+        m_lastRefresh = now;
     }
 
     /*

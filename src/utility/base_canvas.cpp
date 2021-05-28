@@ -1,7 +1,7 @@
 #include "base_canvas.hpp"
 
 const float BaseCanvas::XOFFSET = 0.0f;
-const float BaseCanvas::YOFFSET = -0.1f;
+const float BaseCanvas::YOFFSET = 0.1f;
 
 BaseCanvas::BaseCanvas(uint32_t x, uint32_t y, uint16_t fontsize)
     : m_updated(true)

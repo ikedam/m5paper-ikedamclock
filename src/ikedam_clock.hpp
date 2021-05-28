@@ -1,6 +1,8 @@
 #pragma once
 #include "utility/time_canvas.hpp"
 #include "utility/float_metrics_canvas.hpp"
+#include "utility/health_canvas.hpp"
+#include "utility/battery_canvas.hpp"
 #include <M5EPD_Canvas.h>
 #include <WiFi.h>
 
@@ -41,10 +43,16 @@ private:
     TimeCanvas m_timeCanvas;
     FloatMetricsCanvas m_tempratureCanvas;
     FloatMetricsCanvas m_humidCanvas;
+    BatteryCanvas m_batteryCanvas;
+    HealthCanvas m_wifiHealthCanvas;
+    HealthCanvas m_ntpHealthCanvas;
+    HealthCanvas m_sensorHealthCanvas;
     SpiffsStatus m_spiffsStatus;
 
     bool m_syncTimeTrigger;
     SyncTime m_syncTime;
     String m_imageUrl;
     time_t m_nextImageLoad;
+    bool m_shouldUpdate;
+    time_t m_lastRefresh;
 };
