@@ -1,8 +1,9 @@
 #include "battery_canvas.hpp"
 
-BatteryCanvas::BatteryCanvas(uint32_t x, uint32_t y, uint16_t fontsize)
+BatteryCanvas::BatteryCanvas(uint32_t x, uint32_t y, uint16_t fontsize, bool withVoltage)
     : BaseCanvas(x, y, fontsize)
     , m_voltage(0)
+    , m_withVoltage(withVoltage)
 {
 
 }
@@ -19,7 +20,11 @@ uint32_t BatteryCanvas::getWidth(M5EPD_Driver* pDriver) {
     // 3 letters for icon
     // 3 letters for figures
     // 1 letters for %
-    return getFontsize() * 7 / 2;
+    // (with voltage)
+    // 1 letters for padding
+    // 4 letters for figures
+    // 2 letters for "mV"
+    return m_withVoltage ? (getFontsize() * 14 / 2) : (getFontsize() * 7 / 2);
 }
 
 uint8_t BatteryCanvas::getPercentage() const {
@@ -43,6 +48,10 @@ void BatteryCanvas::drawText(M5EPD_Canvas* pCanvas) {
     if (width > 0) {
         pCanvas->fillRect(margin * 2, margin * 2, width, getFontsize() - margin * 4, 15);
     }
-    snprintf(m_buf, sizeof(m_buf), "%d%%", percent);
+    snprintf(m_buf, sizeof(m_buf), "%u%%", percent);
     pCanvas->drawString(m_buf, (1.5f + XOFFSET) * getFontsize(), YOFFSET * getFontsize());
+    if (m_withVoltage) {
+        snprintf(m_voltageBuf, sizeof(m_voltageBuf), "%umV", m_voltage);
+        pCanvas->drawString(m_voltageBuf, (4 + XOFFSET) * getFontsize(), YOFFSET * getFontsize());
+    }
 }

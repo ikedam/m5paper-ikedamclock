@@ -4,7 +4,7 @@
 
 class BatteryCanvas: public BaseCanvas {
 public:
-    BatteryCanvas(uint32_t x, uint32_t y, uint16_t fontsize);
+    BatteryCanvas(uint32_t x, uint32_t y, uint16_t fontsize, bool withVoltage=true);
 
     void setVoltage(uint32_t voltage);
 protected:
@@ -13,5 +13,7 @@ protected:
 private:
     uint8_t getPercentage() const;
     uint32_t m_voltage;
+    bool m_withVoltage;
     char m_buf[6];
+    char m_voltageBuf[7];
 };
